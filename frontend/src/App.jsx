@@ -6,6 +6,9 @@ const api = axios.create({
   baseURL: "http://localhost:8000",
 });
 
+// 시간을 멈춰주는 유틸리티 함수
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
 function App() {
   const [gameData, setGameData] = useState(null);
   const [phase, setPhase] = useState("waiting");
@@ -15,7 +18,7 @@ function App() {
   const [isBetting, setIsBetting] = useState(false);
   const [dealerMsg, setDealerMsg] = useState("");
   const [isDealerTurn, setIsDealerTurn] = useState(false);
-  const [isFolding, setIsFolding] = useState(false); // [추가] 폴드 애니메이션 상태
+  const [isFolding, setIsFolding] = useState(false);
 
   const callAmount =
     (gameData?.current_bet || 0) - (gameData?.player_phase_bet || 0);
@@ -24,7 +27,6 @@ function App() {
     const initGame = async () => {
       try {
         await api.post("/reset");
-        console.log("Game Backend Reset Success (Initial Load)");
       } catch (error) {
         console.error("Backend 리셋 실패:", error);
       }
@@ -32,6 +34,7 @@ function App() {
     initGame();
   }, []);
 
+  // 카드 렌더링 로직 (기존과 동일)
   const isCardInBestHand = (card, bestCards) => {
     if (!card || !bestCards) return false;
     return bestCards.some(
@@ -61,41 +64,40 @@ function App() {
     );
   };
 
+  // --- 핵심 로직 시작 ---
+
   const handleStartGame = async () => {
     setLoading(true);
     setDealerMsg("");
-    setIsFolding(false); // 리셋
+    setIsFolding(false);
+
     try {
       const response = await api.get("/start");
-      if (response.data.error) {
-        alert(response.data.error);
-        setLoading(false);
-      } else {
-        setGameData(response.data);
-        setPhase(response.data.phase);
-        setBetAmount(50);
-        setIsBetting(false);
+      const startData = response.data;
+      if (startData.error) {
+        alert(startData.error);
+        return;
+      }
 
-        if (response.data.dealer_button === "player") {
-          setIsDealerTurn(true);
-          // setDealerMsg("Thinking...");
-          setTimeout(() => {
-            if (response.data.dealer_action) {
-              setDealerMsg(response.data.dealer_action);
-              // [추가] 1.5초 뒤에 말풍선 사라지게 함
-              setTimeout(() => setDealerMsg(""), 1500);
-            }
-            setGameData((prev) => ({ ...prev, ...response.data }));
-            setIsDealerTurn(false);
-            setLoading(false);
-          }, 1500);
-        } else {
-          setIsDealerTurn(false);
-          setLoading(false);
+      setGameData(startData);
+      setPhase(startData.phase);
+      setBetAmount(50);
+      setIsBetting(false);
+
+      if (startData.dealer_button === "player") {
+        setIsDealerTurn(true);
+        await sleep(1500); // 딜러 고민하는 척
+
+        if (startData.dealer_action) {
+          setDealerMsg(startData.dealer_action);
+          setTimeout(() => setDealerMsg(""), 1500); // 1.5초 후 말풍선 삭제
         }
+        setGameData((prev) => ({ ...prev, ...startData }));
       }
     } catch (error) {
       console.error("시작 실패:", error);
+    } finally {
+      setIsDealerTurn(false);
       setLoading(false);
     }
   };
@@ -104,84 +106,88 @@ function App() {
     if (isDealerTurn) return;
     setIsBetting(false);
     setLoading(true);
-    // setDealerMsg("Thinking...");
+    setDealerMsg("");
     setIsDealerTurn(true);
 
     try {
       const response = await api.get(
         `/next?action=${actionType}&bet=${betAmount}`,
       );
-      if (response.data.error) {
-        alert(response.data.error);
+      const newData = response.data;
+      if (newData.error) {
+        alert(newData.error);
+        return;
+      }
+
+      // 1단계: 유저 돈 이동 연출 (자산만 먼저 업데이트)
+      await sleep(600);
+      setGameData((prev) => ({
+        ...prev,
+        player_money: newData.player_money,
+        dealer_money: newData.dealer_money,
+        pot: newData.pot,
+        current_bet: newData.current_bet,
+        player_phase_bet: newData.player_phase_bet,
+      }));
+
+      const isPhaseChanged = newData.phase !== phase;
+      const isShowdown = newData.phase === "showdown";
+
+      if (isPhaseChanged) {
+        // 2단계: 페이즈 전환 전 "CALL/CHECK" 동의 표시 (쇼다운 제외)
+        if (!isShowdown && ["CALL", "CHECK"].includes(newData.dealer_action)) {
+          setDealerMsg(newData.dealer_action);
+        }
+
+        // 3단계: 카드 오픈 애니메이션 시간 대기
+        await sleep(1000);
         setDealerMsg("");
-        setIsDealerTurn(false);
-        setLoading(false);
+        setGameData(newData); // 카드 데이터 실제 반영
+        setPhase(newData.phase);
+
+        if (isShowdown) {
+          if (newData.is_game_over) setTimeout(() => setIsGameOver(true), 2500);
+        } else if (
+          newData.dealer_action &&
+          !["CALL", "CHECK"].includes(newData.dealer_action)
+        ) {
+          // 새 라운드 딜러 선공일 때 (RAISE 등)
+          await sleep(1000);
+          setDealerMsg(newData.dealer_action);
+          setTimeout(() => setDealerMsg(""), 2000);
+        }
       } else {
-        setTimeout(() => {
-          setGameData((prev) => ({
-            ...prev,
-            player_money: response.data.player_money,
-            dealer_money: response.data.dealer_money,
-            pot: response.data.pot,
-            current_bet: response.data.current_bet,
-            player_phase_bet: response.data.player_phase_bet,
-          }));
-
-          if (response.data.dealer_action) {
-            setDealerMsg(response.data.dealer_action);
-
-            // [추가] 딜러의 액션(CALL, CHECK 등)을 보여준 후 2초 뒤 삭제
-            setTimeout(() => setDealerMsg(""), 2000);
-          }
-          if (response.data.phase === "showdown") {
-            setTimeout(() => {
-              setGameData(response.data);
-              setPhase(response.data.phase);
-              if (response.data.is_game_over)
-                setTimeout(() => setIsGameOver(true), 2500);
-              setLoading(false);
-            }, 1000);
-          } else {
-            setTimeout(() => {
-              setGameData(response.data);
-              setPhase(response.data.phase);
-              setIsDealerTurn(false);
-              setLoading(false);
-            }, 800);
-          }
-        }, 1500);
+        // 페이즈 유지 시 (딜러의 반격 Raise 등)
+        setDealerMsg(newData.dealer_action);
+        setGameData(newData);
+        setTimeout(() => setDealerMsg(""), 2000);
       }
     } catch (error) {
       console.error("액션 실패:", error);
-      setDealerMsg("Error");
+    } finally {
       setIsDealerTurn(false);
       setLoading(false);
     }
   };
 
-  // [수정] Fold 시 애니메이션 효과 추가
   const handleFold = async () => {
     if (isDealerTurn) return;
-    setIsFolding(true); // 카드 던지기 애니메이션 시작
+    setIsFolding(true);
     setLoading(true);
     setDealerMsg("");
-
     try {
-      // 애니메이션이 진행될 시간을 줍니다 (0.6초)
-      setTimeout(async () => {
-        const response = await api.post("/fold");
-        setGameData(response.data);
-        setPhase(response.data.phase);
-        setIsBetting(false);
-        setIsFolding(false); // 애니메이션 상태 해제
-        if (response.data.is_game_over) {
-          setTimeout(() => setIsGameOver(true), 1500);
-        }
-        setLoading(false);
-      }, 600);
+      await sleep(600); // 던지는 애니메이션 시간
+      const response = await api.post("/fold");
+      setGameData(response.data);
+      setPhase(response.data.phase);
+      setIsBetting(false);
+      setIsFolding(false);
+      if (response.data.is_game_over)
+        setTimeout(() => setIsGameOver(true), 1500);
     } catch (error) {
       console.error("Fold 실패:", error);
       setIsFolding(false);
+    } finally {
       setLoading(false);
     }
   };
@@ -189,11 +195,6 @@ function App() {
   const handleFullReset = async () => {
     try {
       await api.post("/reset");
-      setIsGameOver(false);
-      setPhase("waiting");
-      setGameData(null);
-      setIsDealerTurn(false);
-      setIsFolding(false);
       window.location.reload();
     } catch (error) {
       console.error("리셋 실패:", error);
@@ -217,7 +218,6 @@ function App() {
       <h1>Texas Hold'em Table</h1>
 
       <div className="game-board">
-        {/* Dealer Section */}
         <div
           className={`section dealer-section ${phase === "showdown" && gameData?.winner === "dealer" ? "winner-border" : ""}`}
         >
@@ -265,7 +265,6 @@ function App() {
 
         <div className="divider"></div>
 
-        {/* Community Cards Section */}
         <div className="section community-section">
           <div className="card-row">
             {gameData?.community_cards?.map((card, i) => {
@@ -287,7 +286,6 @@ function App() {
 
         <div className="divider"></div>
 
-        {/* Player Section */}
         <div
           className={`section player-section ${phase === "showdown" && gameData?.winner === "player" ? "winner-border" : ""}`}
         >
@@ -298,7 +296,6 @@ function App() {
                 <span className="d-button-puck">D</span>
               )}
             </div>
-            {/* [수정] folding-animation 클래스 조건부 추가 */}
             <div className={`card-row ${isFolding ? "folding-animation" : ""}`}>
               {gameData?.player_hand?.map((card, i) =>
                 renderCard(
@@ -318,7 +315,6 @@ function App() {
         </div>
       </div>
 
-      {/* Fold Overlay Effect */}
       {isFolding && (
         <div className="fold-overlay">
           <h2 className="fold-text">FOLD</h2>
@@ -412,27 +408,15 @@ function App() {
       {isGameOver && (
         <div className="game-over-overlay">
           <div className="game-over-content">
-            <div className="game-over-info">
-              <h1 className="luxury-text">
-                {gameData?.player_money <= 0 ? "GAME OVER" : "CHAMPION!"}
-              </h1>
-              <p>
-                {gameData?.player_money <= 0
-                  ? "모든 자산을 잃었습니다."
-                  : "딜러를 파산시켰습니다!"}
-              </p>
-              <div className="final-stats">
-                최종 자산: <span>${gameData?.player_money}</span>
-              </div>
+            <h1 className="luxury-text">
+              {gameData?.player_money <= 0 ? "GAME OVER" : "CHAMPION!"}
+            </h1>
+            <div className="final-stats">
+              최종 자산: <span>${gameData?.player_money}</span>
             </div>
-            <div className="game-over-actions">
-              <button
-                className="btn btn-start luxury"
-                onClick={handleFullReset}
-              >
-                다시 시작하기
-              </button>
-            </div>
+            <button className="btn btn-start luxury" onClick={handleFullReset}>
+              다시 시작하기
+            </button>
           </div>
         </div>
       )}
