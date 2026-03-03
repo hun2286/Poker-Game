@@ -104,9 +104,8 @@ function App() {
 
   const handlePlayerAction = async (actionType) => {
     if (isDealerTurn) return;
-    setIsBetting(false);
-    setLoading(true);
     setDealerMsg("");
+    setLoading(true);
     setIsDealerTurn(true);
 
     try {
@@ -114,12 +113,15 @@ function App() {
         `/next?action=${actionType}&bet=${betAmount}`,
       );
       const newData = response.data;
+
       if (newData.error) {
         alert(newData.error);
+        setIsDealerTurn(false);
+        setLoading(false);
         return;
       }
 
-      // 1단계: 유저 돈 이동 연출 (자산만 먼저 업데이트)
+      // 1. 유저 칩 나가는 시간 (600ms)
       await sleep(600);
       setGameData((prev) => ({
         ...prev,
@@ -131,39 +133,29 @@ function App() {
       }));
 
       const isPhaseChanged = newData.phase !== phase;
-      const isShowdown = newData.phase === "showdown";
 
       if (isPhaseChanged) {
-        // 2단계: 페이즈 전환 전 "CALL/CHECK" 동의 표시 (쇼다운 제외)
-        if (!isShowdown && ["CALL", "CHECK"].includes(newData.dealer_action)) {
-          setDealerMsg(newData.dealer_action);
-        }
-
-        // 3단계: 카드 오픈 애니메이션 시간 대기
+        // 2. 카드 오픈 대기 (1000ms)
         await sleep(1000);
-        setDealerMsg("");
-        setGameData(newData); // 카드 데이터 실제 반영
         setPhase(newData.phase);
+        setGameData(newData); // 여기서 새로운 카드가 화면에 보임
 
-        if (isShowdown) {
-          if (newData.is_game_over) setTimeout(() => setIsGameOver(true), 2500);
-        } else if (
-          newData.dealer_action &&
-          !["CALL", "CHECK"].includes(newData.dealer_action)
-        ) {
-          // 새 라운드 딜러 선공일 때 (RAISE 등)
-          await sleep(1000);
-          setDealerMsg(newData.dealer_action);
-          setTimeout(() => setDealerMsg(""), 2000);
+        // 3. 카드가 다 깔린 후 딜러의 선공 액션 표시 (백엔드에서 보내준 dealer_action)
+        if (newData.phase !== "showdown" && newData.dealer_action) {
+          await sleep(800); // 딜러가 카드를 보고 고민하는 척
+          setDealerMsg(newData.dealer_action); // 이제 무조건 나옵니다!
+
+          if (newData.dealer_action === "CHECK") {
+            setTimeout(() => setDealerMsg(""), 2000);
+          }
         }
       } else {
-        // 페이즈 유지 시 (딜러의 반격 Raise 등)
+        // 페이즈 유지 시 (딜러의 반격)
         setDealerMsg(newData.dealer_action);
         setGameData(newData);
-        setTimeout(() => setDealerMsg(""), 2000);
       }
     } catch (error) {
-      console.error("액션 실패:", error);
+      console.error(error);
     } finally {
       setIsDealerTurn(false);
       setLoading(false);
