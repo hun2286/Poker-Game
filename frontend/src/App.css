@@ -153,6 +153,9 @@ h1 {
 
 /* 말풍선 스타일 - 버튼 뒤쪽으로 위치하게 함 */
 .dealer-bubble-side {
+  display: block !important;
+  opacity: 1 !important;
+  z-index: 999; /* 무조건 맨 앞으로 */
   background: #f1c40f;
   color: #1a472a;
   padding: 8px 12px;

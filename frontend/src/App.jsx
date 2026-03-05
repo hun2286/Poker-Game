@@ -6,7 +6,6 @@ const api = axios.create({
   baseURL: "http://localhost:8000",
 });
 
-// 시간을 멈춰주는 유틸리티 함수
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 function App() {
@@ -27,14 +26,13 @@ function App() {
     const initGame = async () => {
       try {
         await api.post("/reset");
-      } catch (error) {
-        console.error("Backend 리셋 실패:", error);
+      } catch (e) {
+        console.error(e);
       }
     };
     initGame();
   }, []);
 
-  // 카드 렌더링 로직 (기존과 동일)
   const isCardInBestHand = (card, bestCards) => {
     if (!card || !bestCards) return false;
     return bestCards.some(
@@ -51,7 +49,6 @@ function App() {
     if (!card) return null;
     const isRed = ["♥", "♦"].includes(card.suit);
     let delay = isCommunity ? (index < 3 ? index * 0.1 : 0.05) : index * 0.1;
-
     return (
       <div
         key={`${card.rank}${card.suit}-${index}`}
@@ -64,38 +61,26 @@ function App() {
     );
   };
 
-  // --- 핵심 로직 시작 ---
-
   const handleStartGame = async () => {
     setLoading(true);
     setDealerMsg("");
     setIsFolding(false);
-
     try {
-      const response = await api.get("/start");
-      const startData = response.data;
-      if (startData.error) {
-        alert(startData.error);
-        return;
-      }
-
-      setGameData(startData);
-      setPhase(startData.phase);
+      const res = await api.get("/start");
+      setGameData(res.data);
+      setPhase(res.data.phase);
       setBetAmount(50);
       setIsBetting(false);
-
-      if (startData.dealer_button === "player") {
+      if (res.data.dealer_button === "player") {
         setIsDealerTurn(true);
-        await sleep(1500); // 딜러 고민하는 척
-
-        if (startData.dealer_action) {
-          setDealerMsg(startData.dealer_action);
-          setTimeout(() => setDealerMsg(""), 1500); // 1.5초 후 말풍선 삭제
+        await sleep(1500);
+        if (res.data.dealer_action) {
+          setDealerMsg(res.data.dealer_action);
+          setTimeout(() => setDealerMsg(""), 1500);
         }
-        setGameData((prev) => ({ ...prev, ...startData }));
       }
-    } catch (error) {
-      console.error("시작 실패:", error);
+    } catch (e) {
+      console.error(e);
     } finally {
       setIsDealerTurn(false);
       setLoading(false);
@@ -121,44 +106,60 @@ function App() {
         return;
       }
 
-      // raise 창 즉시 닫기
       setIsBetting(false);
 
-      // 1. 유저 칩 나가는 시간 (600ms)
+      // 1. [연출] 내 칩이 나가는 시간 (0.6초)
       await sleep(600);
       setGameData((prev) => ({
         ...prev,
         player_money: newData.player_money,
-        dealer_money: newData.dealer_money,
         pot: newData.pot,
-        current_bet: newData.current_bet,
         player_phase_bet: newData.player_phase_bet,
+        current_bet: newData.current_bet,
       }));
 
       const isPhaseChanged = newData.phase !== phase;
 
       if (isPhaseChanged) {
-        // 2. 카드 오픈 대기 (1000ms)
+        // [순서 교정 핵심] 유저 Raise -> 딜러 CALL -> 카드 오픈 순서 강제
+
+        // 2. [연출] 딜러가 고민하는 척 (1초)
         await sleep(1000);
-        setPhase(newData.phase);
-        setGameData(newData); // 여기서 새로운 카드가 화면에 보임
 
-        // 3. 카드가 다 깔린 후 딜러의 선공 액션 표시 (백엔드에서 보내준 dealer_action)
-        if (newData.phase !== "showdown" && newData.dealer_action) {
-          await sleep(800); // 딜러가 카드를 보고 고민하는 척
-          setDealerMsg(newData.dealer_action); // 이제 무조건 나옵니다!
-
-          if (newData.dealer_action === "CHECK") {
-            setTimeout(() => setDealerMsg(""), 2000);
-          }
+        // 3. [연출] 딜러 메시지 노출 (CALL -> CHECK 등)
+        if (newData.dealer_action) {
+          setDealerMsg(newData.dealer_action);
         }
+
+        // 4. [중요] 카드는 깔지 않고 '딜러의 돈'만 깎인 상태를 먼저 보여줌
+        // newData 전체를 넣지 않고 필요한 필드만 골라서 업데이트함 (페이즈 변경 방지)
+        setGameData((prev) => ({
+          ...prev,
+          dealer_money: newData.dealer_money,
+          pot: newData.pot,
+          dealer_phase_bet: newData.dealer_phase_bet,
+        }));
+
+        // 5. [연출] 딜러가 콜을 완료한 상태를 유저가 인지하도록 충분히 대기 (1.2초)
+        // 이 시간 동안은 이전 페이즈 화면이 유지됩니다.
+        await sleep(1200);
+
+        // 6. [마무리] 이제서야 페이즈를 넘기고 새 카드를 띄움
+        setPhase(newData.phase);
+        setGameData(newData); // 여기서 전체 데이터가 동기화되며 카드 3장이 나타남
+
+        // 7. 메시지는 카드가 깔린 후에도 조금 더 보여준 뒤 삭제
+        setTimeout(() => setDealerMsg(""), 2000);
       } else {
-        // 페이즈 유지 시 (딜러의 반격)
-        setDealerMsg(newData.dealer_action);
+        // 페이즈가 바뀌지 않는 일반적인 상황 (딜러의 반격 등)
+        await sleep(1000);
+        if (newData.dealer_action) setDealerMsg(newData.dealer_action);
+        await sleep(500);
         setGameData(newData);
+        setTimeout(() => setDealerMsg(""), 2000);
       }
-    } catch (error) {
-      console.error(error);
+    } catch (e) {
+      console.error("오류:", e);
     } finally {
       setIsDealerTurn(false);
       setLoading(false);
@@ -171,17 +172,15 @@ function App() {
     setLoading(true);
     setDealerMsg("");
     try {
-      await sleep(600); // 던지는 애니메이션 시간
-      const response = await api.post("/fold");
-      setGameData(response.data);
-      setPhase(response.data.phase);
+      await sleep(600);
+      const res = await api.post("/fold");
+      setGameData(res.data);
+      setPhase(res.data.phase);
       setIsBetting(false);
       setIsFolding(false);
-      if (response.data.is_game_over)
-        setTimeout(() => setIsGameOver(true), 1500);
-    } catch (error) {
-      console.error("Fold 실패:", error);
-      setIsFolding(false);
+      if (res.data.is_game_over) setTimeout(() => setIsGameOver(true), 1500);
+    } catch (e) {
+      console.error(e);
     } finally {
       setLoading(false);
     }
@@ -191,8 +190,8 @@ function App() {
     try {
       await api.post("/reset");
       window.location.reload();
-    } catch (error) {
-      console.error("리셋 실패:", error);
+    } catch (e) {
+      console.error(e);
     }
   };
 
@@ -209,9 +208,7 @@ function App() {
           You <span>${gameData?.player_money ?? 2000}</span>
         </div>
       </div>
-
       <h1>Texas Hold'em Table</h1>
-
       <div className="game-board">
         <div
           className={`section dealer-section ${phase === "showdown" && gameData?.winner === "dealer" ? "winner-border" : ""}`}
@@ -257,9 +254,7 @@ function App() {
             </div>
           </div>
         </div>
-
         <div className="divider"></div>
-
         <div className="section community-section">
           <div className="card-row">
             {gameData?.community_cards?.map((card, i) => {
@@ -278,9 +273,7 @@ function App() {
             })}
           </div>
         </div>
-
         <div className="divider"></div>
-
         <div
           className={`section player-section ${phase === "showdown" && gameData?.winner === "player" ? "winner-border" : ""}`}
         >
@@ -309,13 +302,6 @@ function App() {
           </div>
         </div>
       </div>
-
-      {isFolding && (
-        <div className="fold-overlay">
-          <h2 className="fold-text">FOLD</h2>
-        </div>
-      )}
-
       <div className="controls">
         {phase === "waiting" || phase === "showdown" ? (
           <button
@@ -399,7 +385,6 @@ function App() {
           </div>
         )}
       </div>
-
       {isGameOver && (
         <div className="game-over-overlay">
           <div className="game-over-content">
