@@ -71,7 +71,10 @@ def start_game_logic():
     dealer_action = None
     if game_state["dealer_button"] == "player":
         d_res = evaluate_hand(game_state["dealer_hand"])
-        if d_res.get("score", 0) > 0 or random.random() < 0.3:
+        # 딜러 선공 시 잔액 확인 후 레이즈 결정
+        if (d_res.get("score", 0) > 0 or random.random() < 0.3) and game_state[
+            "dealer_money"
+        ] >= 50:
             dealer_action = "RAISE"
             raise_amount = 50
             game_state["dealer_money"] -= raise_amount
@@ -89,11 +92,12 @@ def next_phase_logic(action, bet):
     curr_phase = game_state["phase"]
     deck = game_state["deck"]
 
-    # 1. 플레이어 베팅 정산
+    # 1. 플레이어 베팅 정산 (기존 동일)
     p_needed = game_state["current_bet"] - game_state["player_phase_bet"]
     actual_p_bet = (
         p_needed if action == "call" else (p_needed + bet if action == "raise" else 0)
     )
+
     if action == "raise":
         game_state["current_bet"] += bet
 
@@ -105,45 +109,48 @@ def next_phase_logic(action, bet):
     game_state["pot"] += actual_p_bet
 
     # 2. 딜러 반응 및 페이즈 종료 판단
-    dealer_msg = ""  # 기본적으로 딜러 침묵
+    dealer_msg = ""
     should_proceed = False
 
     if action == "call":
-        should_proceed = True  # 유저가 콜하면 즉시 종료 (메시지 없음)
-
+        should_proceed = True
     elif action == "check":
         if game_state["dealer_button"] == "player":
-            should_proceed = True  # 딜러 선공 시 유저가 체크하면 라운드 종료
+            should_proceed = True
         else:
-            d_res = evaluate_hand(
-                game_state["dealer_hand"] + game_state["community_cards"]
-            )
-            if d_res.get("score", 0) > 1 or random.random() < 0.2:
-                # 딜러 반격 (레이즈)
-                r_amt = 50
-                game_state["dealer_money"] -= r_amt
-                game_state["dealer_phase_bet"] = r_amt
-                game_state["current_bet"] = r_amt
-                game_state["pot"] += r_amt
-                dealer_msg = "RAISE"
-                should_proceed = False
-            else:
-                dealer_msg = "CHECK"
+            if game_state["dealer_money"] <= 0 or game_state["player_money"] <= 0:
+                dealer_msg = ""
                 should_proceed = True
-
+            else:
+                d_res = evaluate_hand(
+                    game_state["dealer_hand"] + game_state["community_cards"]
+                )
+                can_dealer_raise = (
+                    game_state["dealer_money"] >= 50 and game_state["player_money"] > 0
+                )
+                if can_dealer_raise and (
+                    d_res.get("score", 0) > 1 or random.random() < 0.2
+                ):
+                    r_amt = 50
+                    game_state["dealer_money"] -= r_amt
+                    game_state["dealer_phase_bet"] = r_amt
+                    game_state["current_bet"] = r_amt
+                    game_state["pot"] += r_amt
+                    dealer_msg = "RAISE"
+                    should_proceed = False
+                else:
+                    dealer_msg = "CHECK"
+                    should_proceed = True
     elif action == "raise":
         d_res = evaluate_hand(game_state["dealer_hand"] + game_state["community_cards"])
-        # 딜러 폴드 로직 (기존 유지)
         if d_res.get("score", 0) == 0 and bet >= 100 and random.random() < 0.6:
             return handle_dealer_fold()
 
-        # 딜러 콜 처리
         d_needed = game_state["current_bet"] - game_state["dealer_phase_bet"]
-        game_state["dealer_money"] -= d_needed
-        game_state["dealer_phase_bet"] += d_needed
-        game_state["pot"] += d_needed
-
-        # [수정] 딜러의 대응 액션을 저장
+        actual_d_call = min(d_needed, game_state["dealer_money"])
+        game_state["dealer_money"] -= actual_d_call
+        game_state["dealer_phase_bet"] += actual_d_call
+        game_state["pot"] += actual_d_call
         dealer_msg = "CALL"
         should_proceed = True
 
@@ -154,7 +161,7 @@ def next_phase_logic(action, bet):
 
         reset_phase_bets()
 
-        # 카드 깔기
+        # 카드 오픈
         if curr_phase == "pre-flop":
             game_state["community_cards"] += [deck.pop() for _ in range(3)]
             game_state["phase"] = "flop"
@@ -162,33 +169,36 @@ def next_phase_logic(action, bet):
             game_state["community_cards"].append(deck.pop())
             game_state["phase"] = "turn" if curr_phase == "flop" else "river"
 
-        # [수정] 딜러의 대응(CALL)과 다음 라운드 액션(CHECK/RAISE)을 연결
+        # [핵심] 다음 페이즈 선공 결정
+        next_action = ""
         if game_state["dealer_button"] == "player":
-            d_res_new = evaluate_hand(
-                game_state["dealer_hand"] + game_state["community_cards"]
-            )
-
-            # 다음 라운드 선공 결정
-            if d_res_new.get("score", 0) > 1 or random.random() < 0.2:
-                r_amt = 50
-                game_state["dealer_money"] -= r_amt
-                game_state["dealer_phase_bet"] = r_amt
-                game_state["current_bet"] = r_amt
-                game_state["pot"] += r_amt
-                next_action = "RAISE"
+            if game_state["dealer_money"] <= 0 or game_state["player_money"] <= 0:
+                next_action = ""
             else:
-                next_action = "CHECK"
+                d_res_new = evaluate_hand(
+                    game_state["dealer_hand"] + game_state["community_cards"]
+                )
+                r_amt = min(50, game_state["dealer_money"])
 
-            # 만약 방금 딜러가 CALL을 했다면, "CALL -> CHECK" 식으로 합쳐서 전달
+                if (
+                    d_res_new.get("score", 0) > 1 or random.random() < 0.2
+                ) and r_amt > 0:
+                    # 실제 레이즈 로직 채우기
+                    game_state["dealer_money"] -= r_amt
+                    game_state["dealer_phase_bet"] = r_amt
+                    game_state["current_bet"] = r_amt
+                    game_state["pot"] += r_amt
+                    next_action = "RAISE"
+                else:
+                    next_action = "CHECK"
+
+            # dealer_msg 업데이트 (CALL -> CHECK 형태 보장)
             if dealer_msg == "CALL":
-                dealer_msg = f"CALL -> {next_action}"
+                dealer_msg = f"CALL -> {next_action}" if next_action else "CALL"
             else:
-                dealer_msg = next_action
-        else:
-            # 플레이어 선공인 경우 딜러는 CALL만 하고 입 닫음
-            pass
+                # 유저가 체크해서 넘어온 경우(dealer_msg가 CHECK일 때)도 next_action을 반영
+                dealer_msg = next_action if next_action else dealer_msg
 
-    # 최종 리턴
     p_final_res = evaluate_hand(
         game_state["player_hand"] + game_state["community_cards"]
     )
