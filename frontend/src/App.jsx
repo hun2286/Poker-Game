@@ -110,11 +110,8 @@ function App() {
       );
       const newData = response.data;
 
+      // 1. 딜러 기권 처리
       if (newData.dealer_action === "FOLD") {
-        console.log(
-          "%c[DEALER] FOLD (유저 승리!)",
-          "color: white; background: #c0392b; padding: 2px 5px;",
-        );
         setDealerMsg("FOLD");
         await sleep(1000);
         setGameData(newData);
@@ -122,35 +119,51 @@ function App() {
         return;
       }
 
+      // [보정 1] 유저 돈 즉시 차감 (쇼다운 전 베팅금 미차감 및 스포일러 방지 시작)
+      // 데이터가 오자마자 유저의 돈만 먼저 깎아서 '베팅' 연출을 완성합니다.
+      setGameData((prev) => ({
+        ...prev,
+        player_money: newData.player_money,
+        current_bet: newData.current_bet,
+        player_phase_bet: newData.player_phase_bet,
+      }));
+      await sleep(600);
+
       const isShowdown = newData.phase === "showdown";
       const isPhaseChanged = newData.phase !== phase;
 
-      await sleep(400);
-      setGameData((prev) => ({
-        ...prev,
-        player_money: isShowdown ? prev.player_money : newData.player_money,
-        current_bet: newData.current_bet,
-      }));
-
       if (isPhaseChanged) {
-        console.log(
-          `%c[SYSTEM] 페이즈 전환: ${phase.toUpperCase()} -> ${newData.phase.toUpperCase()}`,
-          "color: #f1c40f;",
-        );
         if (isShowdown) {
+          // --- 쇼다운 시퀀스 ---
           setIsShowdownPending(true);
-          await sleep(600);
+          // 칩이 팟으로 합쳐지는 시간
+          setGameData((prev) => ({ ...prev, pot: newData.pot }));
+          await sleep(800);
+
           setPhase("showdown");
           await sleep(1500);
-          setGameData({ ...newData, pot: 0 });
+          setGameData({ ...newData, pot: 0 }); // 최종 승자 정산 반영
           setIsShowdownPending(false);
         } else {
+          // --- 일반 페이즈 전환 (Flop, Turn, River) ---
+          // 1. 칩 정산 연출 (이전 베팅금을 팟으로 합침)
           setGameData((prev) => ({ ...prev, pot: newData.pot }));
-          await sleep(600);
-          setGameData(newData);
-          setPhase(newData.phase);
-          await sleep(1500); // 카드 딜링 대기
+          await sleep(800);
 
+          // 2. 카드 오픈 (중요: 딜러 돈은 아직 깎기 전 상태 유지)
+          setPhase(newData.phase);
+          setGameData((prev) => ({
+            ...prev,
+            community_cards: newData.community_cards,
+            phase: newData.phase,
+            // 다음 페이즈를 위해 베팅 정보 초기화
+            current_bet: 0,
+            player_phase_bet: 0,
+            dealer_phase_bet: 0,
+          }));
+          await sleep(1500); // 카드 깔리는 애니메이션 대기
+
+          // 3. 딜러 선공 액션 (스포일러 방지 핵심 구간)
           if (newData.dealer_button === "player") {
             const nextAct =
               newData.dealer_action && newData.dealer_action.includes(" -> ")
@@ -158,30 +171,28 @@ function App() {
                 : newData.dealer_action || "CHECK";
 
             setDealerMsg("...");
-            await sleep(800);
+            await sleep(1000); // 딜러가 고민하는 시간
+
             console.log(
               `%c[DEALER] 선공: ${nextAct}`,
               "color: #ff7675; font-weight: bold;",
             );
             setDealerMsg(nextAct);
-            if (nextAct.includes("RAISE")) setGameData(newData);
+
+            // 딜러가 말을 뱉는 순간 전체 데이터(딜러 돈 차감 포함)를 반영합니다.
+            setGameData(newData);
+            await sleep(1200);
           }
         }
       } else {
-        // --- [동일 페이즈 딜러 대응] 유저 CHECK 시 딜러가 RAISE 하는 경우 등 ---
-        await sleep(600);
+        // --- 동일 페이즈 내 딜러 대응 ---
         if (newData.dealer_action) {
-          // 체이닝된 메시지 중 앞부분만 추출 (예: "RAISE -> CHECK" 인 경우 "RAISE")
           const responseAction = newData.dealer_action.split(" -> ")[0];
-
           setDealerMsg("...");
-          await sleep(600);
+          await sleep(800);
 
-          console.log(
-            `%c[DEALER] 대응: ${responseAction}`,
-            "color: #ff7675; font-weight: bold;",
-          );
           setDealerMsg(responseAction);
+          // 대응 액션 시점에 데이터 반영
           setGameData(newData);
           await sleep(1000);
         }
@@ -191,7 +202,6 @@ function App() {
     } finally {
       setIsDealerTurn(false);
       setLoading(false);
-      // 메시지 초기화를 삭제하거나 시간을 넉넉히 주어 가독성 보장
       setTimeout(() => setDealerMsg(""), 3000);
     }
   };
