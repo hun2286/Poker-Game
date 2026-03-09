@@ -75,18 +75,26 @@ def start_game_logic():
     ):
         return {"error": "자금이 부족합니다!", "is_game_over": True}
 
-    # 딜러 버튼 결정 (최초 1회)
+    # 🔄 버튼 로테이션 (승패 무관 토글)
     if game_state["dealer_button"] is None:
         game_state["dealer_button"] = random.choice(["player", "dealer"])
+    else:
+        game_state["dealer_button"] = (
+            "player" if game_state["dealer_button"] == "dealer" else "dealer"
+        )
 
     reset_phase_bets()
 
-    # 안티(Ante) 지불 및 팟 생성
+    # 안티(Ante) 지불 및 초기 베팅액 설정
     game_state["player_money"] -= game_state["ante"]
     game_state["dealer_money"] -= game_state["ante"]
     game_state["pot"] = game_state["ante"] * 2
 
-    # 카드 분배
+    # 🔴 중요: 프리플랍 시작 시 안티를 '현재 페이즈 베팅액'으로 간주
+    game_state["player_phase_bet"] = game_state["ante"]
+    game_state["dealer_phase_bet"] = game_state["ante"]
+    game_state["current_bet"] = game_state["ante"]
+
     deck = create_deck()
     game_state["deck"] = deck
     game_state["player_hand"] = [deck.pop(), deck.pop()]
@@ -94,16 +102,17 @@ def start_game_logic():
     game_state["community_cards"] = []
     game_state["phase"] = "pre-flop"
 
-    # 딜러 선공일 경우 액션 결정
     dealer_action = ""
+    # 딜러 선공일 경우 (유저가 D버튼)
     if game_state["dealer_button"] == "player":
         dealer_action = decide_dealer_action(game_state["dealer_hand"])
         if dealer_action == "RAISE" and game_state["dealer_money"] >= 50:
             raise_amount = 50
             game_state["dealer_money"] -= raise_amount
             game_state["pot"] += raise_amount
-            game_state["dealer_phase_bet"] = raise_amount
-            game_state["current_bet"] = raise_amount
+            # 🔴 안티(50) + 레이즈(50) = 총 100 베팅으로 업데이트
+            game_state["dealer_phase_bet"] = game_state["ante"] + raise_amount
+            game_state["current_bet"] = game_state["ante"] + raise_amount
         else:
             dealer_action = "CHECK"
 
@@ -191,9 +200,20 @@ def next_phase_logic(action, bet):
 
     # 3. 페이즈 전환 (금액이 일치할 때만 실행)
     if should_proceed:
-        if curr_phase == "river":
+        # 🔴 [추가] 올인 상황 체크: 한 명이라도 잔액이 0원이고 베팅액이 맞춰졌다면
+        is_all_in = game_state["player_money"] == 0 or game_state["dealer_money"] == 0
+
+        # 🔴 리버가 끝났거나, 올인 상황이라면 즉시 쇼다운으로 점프
+        if curr_phase == "river" or is_all_in:
+            # 올인 시 아직 안 깔린 커뮤니티 카드가 있다면 모두 뽑기
+            remaining = 5 - len(game_state["community_cards"])
+            if remaining > 0:
+                game_state["community_cards"] += [deck.pop() for _ in range(remaining)]
+
+            # 바로 결과 정산 함수 호출
             return finish_and_showdown(dealer_msg)
 
+        # 일반적인 페이즈 전환 (올인이 아닐 때만 실행)
         reset_phase_bets()
 
         if curr_phase == "pre-flop":
