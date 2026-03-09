@@ -94,6 +94,7 @@ function App() {
 
   const handlePlayerAction = async (actionType) => {
     if (isDealerTurn && actionType !== "auto") return;
+
     console.log(
       `%c[USER] 선택: ${actionType.toUpperCase()}`,
       "color: #55efc4; font-weight: bold;",
@@ -110,7 +111,6 @@ function App() {
       );
       const newData = response.data;
 
-      // 1. 딜러 기권 처리
       if (newData.dealer_action === "FOLD") {
         setDealerMsg("FOLD");
         await sleep(1000);
@@ -119,51 +119,76 @@ function App() {
         return;
       }
 
-      // [보정 1] 유저 돈 즉시 차감 (쇼다운 전 베팅금 미차감 및 스포일러 방지 시작)
-      // 데이터가 오자마자 유저의 돈만 먼저 깎아서 '베팅' 연출을 완성합니다.
-      setGameData((prev) => ({
-        ...prev,
-        player_money: newData.player_money,
-        current_bet: newData.current_bet,
-        player_phase_bet: newData.player_phase_bet,
-      }));
-      await sleep(600);
-
-      const isShowdown = newData.phase === "showdown";
       const isPhaseChanged = newData.phase !== phase;
+      const isShowdown = newData.phase === "showdown";
 
+      // 1. 딜러의 즉각 대응 처리
+      if (newData.dealer_action) {
+        const immediateRes = newData.dealer_action.includes(" -> ")
+          ? newData.dealer_action.split(" -> ")[0]
+          : newData.dealer_action;
+
+        const shouldSkipMsg =
+          isPhaseChanged && (actionType === "check" || actionType === "call");
+
+        if (!shouldSkipMsg) {
+          setDealerMsg("...");
+          await sleep(600);
+          setDealerMsg(immediateRes);
+          // 🔴 딜러 대응 콘솔 로그 보강
+          console.log(
+            `%c[DEALER] 대응: ${immediateRes}`,
+            "color: #ff7675; font-weight: bold;",
+          );
+
+          setGameData((prev) => ({
+            ...prev,
+            dealer_money: newData.dealer_money,
+            pot: newData.pot,
+            current_bet: newData.current_bet,
+            player_money: newData.player_money,
+          }));
+          await sleep(1200);
+        } else {
+          setGameData((prev) => ({
+            ...prev,
+            dealer_money: newData.dealer_money,
+            pot: newData.pot,
+          }));
+        }
+      }
+
+      // 2. 페이즈 전환 시퀀스
       if (isPhaseChanged) {
-        if (isShowdown) {
-          // --- 쇼다운 시퀀스 ---
-          setIsShowdownPending(true);
-          // 칩이 팟으로 합쳐지는 시간
-          setGameData((prev) => ({ ...prev, pot: newData.pot }));
-          await sleep(800);
+        // 🔴 페이즈 전환 시스템 로그 추가
+        console.log(
+          `%c[SYSTEM] 페이즈 전환: ${newData.phase.toUpperCase()}`,
+          "color: #f1c40f; font-weight: bold;",
+        );
 
+        if (isShowdown) {
+          setIsShowdownPending(true);
+          await sleep(600);
           setPhase("showdown");
           await sleep(1500);
-          setGameData({ ...newData, pot: 0 }); // 최종 승자 정산 반영
+          setGameData({ ...newData, pot: 0 });
           setIsShowdownPending(false);
         } else {
-          // --- 일반 페이즈 전환 (Flop, Turn, River) ---
-          // 1. 칩 정산 연출 (이전 베팅금을 팟으로 합침)
           setGameData((prev) => ({ ...prev, pot: newData.pot }));
           await sleep(800);
 
-          // 2. 카드 오픈 (중요: 딜러 돈은 아직 깎기 전 상태 유지)
           setPhase(newData.phase);
           setGameData((prev) => ({
             ...prev,
             community_cards: newData.community_cards,
             phase: newData.phase,
-            // 다음 페이즈를 위해 베팅 정보 초기화
             current_bet: 0,
             player_phase_bet: 0,
             dealer_phase_bet: 0,
           }));
-          await sleep(1500); // 카드 깔리는 애니메이션 대기
+          await sleep(1500);
 
-          // 3. 딜러 선공 액션 (스포일러 방지 핵심 구간)
+          // 3. 새 페이즈에서의 딜러 선공 처리
           if (newData.dealer_button === "player") {
             const nextAct =
               newData.dealer_action && newData.dealer_action.includes(" -> ")
@@ -171,34 +196,29 @@ function App() {
                 : newData.dealer_action || "CHECK";
 
             setDealerMsg("...");
-            await sleep(1000); // 딜러가 고민하는 시간
+            await sleep(1000);
 
+            // 🔴 [핵심] 딜러 선공 콘솔 로그 복구
             console.log(
               `%c[DEALER] 선공: ${nextAct}`,
-              "color: #ff7675; font-weight: bold;",
+              "color: #ff7675; font-weight: bold; background: #2d3436; padding: 2px 5px;",
             );
-            setDealerMsg(nextAct);
 
-            // 딜러가 말을 뱉는 순간 전체 데이터(딜러 돈 차감 포함)를 반영합니다.
+            setDealerMsg(nextAct);
             setGameData(newData);
-            await sleep(1200);
+          } else {
+            // 🔴 유저 선공 알림 로그 추가
+            console.log(
+              `%c[SYSTEM] 유저 선공 차례입니다 (D버튼: 딜러)`,
+              "color: #55efc4;",
+            );
           }
         }
       } else {
-        // --- 동일 페이즈 내 딜러 대응 ---
-        if (newData.dealer_action) {
-          const responseAction = newData.dealer_action.split(" -> ")[0];
-          setDealerMsg("...");
-          await sleep(800);
-
-          setDealerMsg(responseAction);
-          // 대응 액션 시점에 데이터 반영
-          setGameData(newData);
-          await sleep(1000);
-        }
+        setGameData(newData);
       }
     } catch (e) {
-      console.error(e);
+      console.error("Error:", e);
     } finally {
       setIsDealerTurn(false);
       setLoading(false);
